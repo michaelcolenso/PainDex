@@ -11,12 +11,12 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "paindex"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "bc2fc4c8-3259-4654-9606-07a3354dc52b"
 migrations_dir = "migrations"
 
 [[kv_namespaces]]
 binding = "KV"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "722af5a5c7014b7aaa010bee0a327611"
 
 [[vectorize]]
 binding = "VECTORIZE"
