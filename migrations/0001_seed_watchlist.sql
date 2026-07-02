@@ -1,0 +1,47 @@
+-- Seed watchlist per Build Spec §9. Subscriber counts are left NULL here —
+-- the ingest pipeline backfills `subscribers` from Reddit's listing payload
+-- (`subreddit_subscribers`) on first fetch, since counts drift and a
+-- pre-launch snapshot would be stale immediately. Run this once against a
+-- fresh database; it is idempotent via INSERT OR IGNORE.
+
+INSERT OR IGNORE INTO subreddits (name, category, active) VALUES
+  ('cannabusiness', 'regulated', 1),
+  ('hempflowers', 'regulated', 1),
+  ('FoodTrucks', 'regulated', 1),
+  ('restaurateur', 'regulated', 1),
+  ('chefit', 'regulated', 1),
+  ('physicaltherapy', 'regulated', 1),
+  ('pharmacy', 'regulated', 1),
+  ('DentalHygiene', 'regulated', 1),
+  ('FinancialPlanning', 'regulated', 1),
+  ('Contractors', 'regulated', 1),
+  ('HVAC', 'regulated', 1),
+  ('electricians', 'regulated', 1),
+  ('Plumbing', 'regulated', 1),
+  ('taxpros', 'regulated', 1),
+  ('Luthier', 'b2b', 1),
+  ('Blacksmith', 'b2b', 1),
+  ('Leathercraft', 'b2b', 1),
+  ('CommercialAV', 'b2b', 1),
+  ('LiveSound', 'b2b', 1),
+  ('CommercialPrinting', 'b2b', 1),
+  ('Logistics', 'b2b', 1),
+  ('supplychain', 'b2b', 1),
+  ('MachineShop', 'b2b', 1),
+  ('welding', 'b2b', 1),
+  ('discgolf', 'platform', 1),
+  ('Pickleball', 'platform', 1),
+  ('vandwellers', 'platform', 1),
+  ('TinyHouses', 'platform', 1),
+  ('Skoolies', 'platform', 1),
+  ('lasercutting', 'platform', 1),
+  ('CNC', 'platform', 1),
+  ('3Dprinting', 'platform', 1),
+  ('beekeeping', 'platform', 1),
+  ('mushroomgrowers', 'platform', 1),
+  ('Flipping', 'arbitrage', 1),
+  ('sneakermarket', 'arbitrage', 1),
+  ('watchexchange', 'arbitrage', 1),
+  ('Vinyl_Collectors', 'arbitrage', 1),
+  ('storageauctions', 'arbitrage', 1),
+  ('FulfillmentByAmazon', 'arbitrage', 1);
