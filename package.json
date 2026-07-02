@@ -1,0 +1,28 @@
+{
+  "name": "paindex",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nightly Reddit pain-point discovery pipeline: ingest, classify, cluster, enrich, review.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate:local": "wrangler d1 migrations apply paindex --local",
+    "db:migrate:remote": "wrangler d1 migrations apply paindex --remote",
+    "seed:local": "wrangler d1 execute paindex --local --file=./migrations/0001_seed_watchlist.sql",
+    "seed:remote": "wrangler d1 execute paindex --remote --file=./migrations/0001_seed_watchlist.sql",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "hono": "^4.12.27"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260702.1",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.106.0"
+  }
+}
