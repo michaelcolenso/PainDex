@@ -3,9 +3,8 @@ main = "src/index.ts"
 compatibility_date = "2026-07-02"
 compatibility_flags = ["nodejs_compat"]
 
-# Populate these after running the setup commands in README.md:
-#   npx wrangler d1 create paindex
-#   npx wrangler kv namespace create paindex-kv
+# D1 (DB) and KV are already provisioned and wired below. Vectorize has no
+# create-on-deploy, so create the index once before the first deploy:
 #   npx wrangler vectorize create paindex-clusters --dimensions=768 --metric=cosine
 
 [[d1_databases]]
