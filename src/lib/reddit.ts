@@ -1,17 +1,16 @@
 import type { Env } from "../types";
-import { KV_KEYS } from "./config";
 
-// Reddit tokens are typically valid 24h; we refresh a bit early so a
-// straggling batch never gets caught mid-request with a dead token.
-const TOKEN_REFRESH_AFTER_SECONDS = 23 * 60 * 60;
-const MIN_REQUEST_INTERVAL_MS = 1000; // 1 request/second, per spec §4.1
+// Scrappy, no-cost Reddit access: public endpoints only — no OAuth, no API
+// keys, no paid tier. We fetch the anonymous `.json` listing first and fall
+// back to the `.rss` feed when Reddit refuses the JSON path (it sometimes 403s
+// datacenter / Workers egress on `.json` while still serving the lighter feed).
+//
+// Reddit's unauthenticated budget is roughly 10 requests/minute per IP, so we
+// pace one request every few seconds and back off on 429/5xx. Batches are 15
+// minutes apart, so the extra wall-clock spent sleeping is comfortably within a
+// cron invocation.
+const MIN_REQUEST_INTERVAL_MS = 6000; // ~10 req/min, the anonymous ceiling
 const MAX_RETRIES = 3;
-
-interface CachedToken {
-  accessToken: string;
-  obtainedAt: number; // epoch seconds
-  expiresIn: number;
-}
 
 export interface RedditListingPost {
   id: string; // short id, e.g. "abc123"
@@ -30,43 +29,11 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Reddit rejects requests with a missing or generic User-Agent. Identify the
+// app honestly; REDDIT_USERNAME is optional contact info, never a credential.
 export function userAgent(env: Env): string {
-  return `web:paindex:v1.0 (by /u/${env.REDDIT_USERNAME})`;
-}
-
-async function fetchNewToken(env: Env): Promise<CachedToken> {
-  const basic = btoa(`${env.REDDIT_CLIENT_ID}:${env.REDDIT_CLIENT_SECRET}`);
-  const res = await fetch("https://www.reddit.com/api/v1/access_token", {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": userAgent(env),
-    },
-    body: "grant_type=client_credentials",
-  });
-  if (!res.ok) {
-    throw new Error(`Reddit token request failed: ${res.status} ${await res.text()}`);
-  }
-  const data = (await res.json()) as { access_token: string; expires_in: number };
-  return {
-    accessToken: data.access_token,
-    obtainedAt: Math.floor(Date.now() / 1000),
-    expiresIn: data.expires_in,
-  };
-}
-
-async function getRedditToken(env: Env): Promise<string> {
-  const cached = await env.KV.get<CachedToken>(KV_KEYS.redditToken, "json");
-  const now = Math.floor(Date.now() / 1000);
-  if (cached && now - cached.obtainedAt < TOKEN_REFRESH_AFTER_SECONDS) {
-    return cached.accessToken;
-  }
-  const fresh = await fetchNewToken(env);
-  await env.KV.put(KV_KEYS.redditToken, JSON.stringify(fresh), {
-    expirationTtl: Math.max(fresh.expiresIn - 300, 60),
-  });
-  return fresh.accessToken;
+  const contact = env.REDDIT_USERNAME ? ` (by /u/${env.REDDIT_USERNAME})` : "";
+  return `web:paindex:v1.0${contact}`;
 }
 
 // Module-scope throttle. Best-effort: it holds within a single invocation's
@@ -80,51 +47,135 @@ async function throttle(): Promise<void> {
   lastRequestAt = Date.now();
 }
 
-async function redditRequest(env: Env, path: string): Promise<unknown> {
-  const token = await getRedditToken(env);
-
+// A throttled, retrying GET against reddit.com. Returns the Response as-is so
+// callers can decide whether a non-ok status means "try the fallback" or "fail".
+async function publicGet(env: Env, url: string): Promise<Response> {
   for (let attempt = 0; ; attempt++) {
     await throttle();
-    const res = await fetch(`https://oauth.reddit.com${path}`, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "User-Agent": userAgent(env),
-      },
+    const res = await fetch(url, {
+      headers: { "User-Agent": userAgent(env), Accept: "application/json, text/xml;q=0.9, */*;q=0.5" },
     });
 
-    if (res.status === 429) {
-      if (attempt >= MAX_RETRIES) {
-        throw new Error(`Reddit 429 rate-limited after ${MAX_RETRIES} retries: ${path}`);
-      }
+    if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
       await sleep(2 ** (attempt + 1) * 1000);
       continue;
     }
-
-    if (!res.ok) {
-      throw new Error(`Reddit request failed (${res.status}) for ${path}: ${await res.text()}`);
-    }
-
-    const remaining = res.headers.get("x-ratelimit-remaining");
-    if (remaining !== null && Number(remaining) < 2) {
-      const resetSeconds = Number(res.headers.get("x-ratelimit-reset") ?? "1");
-      await sleep(Math.min(Math.max(resetSeconds, 1), 10) * 1000);
-    }
-
-    return res.json();
+    return res;
   }
 }
 
-function parseListing(data: unknown): RedditListingPost[] {
+export function parseListing(data: unknown): RedditListingPost[] {
   const children = (data as { data?: { children?: { data?: unknown }[] } })?.data?.children ?? [];
   return children.map((c) => c.data).filter((d): d is RedditListingPost => Boolean(d));
 }
 
+// Fetch a listing as anonymous JSON. Returns null (rather than throwing) when
+// Reddit refuses the JSON path, signalling the caller to try the RSS fallback.
+async function fetchListingJson(env: Env, subreddit: string, query: string): Promise<RedditListingPost[] | null> {
+  const res = await publicGet(env, `https://www.reddit.com/r/${subreddit}/${query}&raw_json=1`);
+  if (!res.ok) return null;
+  try {
+    return parseListing(await res.json());
+  } catch {
+    return null;
+  }
+}
+
+function firstGroup(source: string, re: RegExp): string | null {
+  const m = source.match(re);
+  return m ? m[1] : null;
+}
+
+function codePoint(cp: number): string {
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return "";
+  }
+}
+
+// Decode the XML/HTML entities Reddit's feed uses. `&amp;` is handled last so an
+// already-decoded `&` isn't re-consumed; call twice to unwind double-encoding.
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => codePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => codePoint(parseInt(d, 10)))
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&");
+}
+
+function htmlToText(raw: string): string {
+  const html = decodeEntities(raw); // entity-encoded HTML -> HTML
+  const stripped = html.replace(/<[^>]*>/g, " ");
+  return decodeEntities(stripped)
+    .replace(/\s+/g, " ")
+    .replace(/\s+([.,!?;:])/g, "$1") // drop the space a stripped closing tag leaves before punctuation
+    .trim();
+}
+
+// Parse Reddit's Atom feed into the same shape as the JSON listing. The feed
+// carries less: no score or comment count (both default to 0) and no subscriber
+// count. Enough to keep prefilter + classification alive when JSON is blocked.
+export function parseRss(xml: string, subreddit: string): RedditListingPost[] {
+  const entries = xml
+    .split(/<entry>/i)
+    .slice(1)
+    .map((chunk) => chunk.split(/<\/entry>/i)[0]);
+
+  const posts: RedditListingPost[] = [];
+  for (const entry of entries) {
+    const permalink = firstGroup(entry, /<link[^>]*href="([^"]+)"/i) ?? "";
+    const idRaw = firstGroup(entry, /<id>\s*([^<]+?)\s*<\/id>/i) ?? "";
+    let name = idRaw;
+    if (!/^t3_[a-z0-9]+$/i.test(name)) {
+      const fromLink = permalink.match(/\/comments\/([a-z0-9]+)/i);
+      name = fromLink ? `t3_${fromLink[1]}` : "";
+    }
+    if (!name) continue;
+
+    const publishedRaw =
+      firstGroup(entry, /<published>\s*([^<]+?)\s*<\/published>/i) ??
+      firstGroup(entry, /<updated>\s*([^<]+?)\s*<\/updated>/i);
+    const parsed = publishedRaw ? Date.parse(publishedRaw) : NaN;
+    const created_utc = Number.isFinite(parsed) ? Math.floor(parsed / 1000) : 0;
+
+    posts.push({
+      id: name.replace(/^t3_/, ""),
+      name,
+      subreddit,
+      title: decodeEntities(firstGroup(entry, /<title[^>]*>([\s\S]*?)<\/title>/i) ?? ""),
+      selftext: htmlToText(firstGroup(entry, /<content[^>]*>([\s\S]*?)<\/content>/i) ?? ""),
+      created_utc,
+      score: 0,
+      num_comments: 0,
+      permalink,
+      subreddit_subscribers: null,
+    });
+  }
+  return posts;
+}
+
+async function fetchListingRss(env: Env, subreddit: string, sort: string): Promise<RedditListingPost[]> {
+  const res = await publicGet(env, `https://www.reddit.com/r/${subreddit}/${sort}.rss?limit=100`);
+  if (!res.ok) {
+    throw new Error(`Reddit unavailable for r/${subreddit} (${sort}): JSON refused, RSS ${res.status}`);
+  }
+  return parseRss(await res.text(), subreddit);
+}
+
 export async function fetchNewPosts(env: Env, subreddit: string, limit = 100): Promise<RedditListingPost[]> {
-  const data = await redditRequest(env, `/r/${subreddit}/new?limit=${limit}`);
-  return parseListing(data);
+  const json = await fetchListingJson(env, subreddit, `new.json?limit=${limit}`);
+  if (json !== null) return json;
+  return fetchListingRss(env, subreddit, "new");
 }
 
 export async function fetchTopWeekPosts(env: Env, subreddit: string, limit = 25): Promise<RedditListingPost[]> {
-  const data = await redditRequest(env, `/r/${subreddit}/top?t=week&limit=${limit}`);
-  return parseListing(data);
+  const json = await fetchListingJson(env, subreddit, `top.json?t=week&limit=${limit}`);
+  // `top` has no meaningful RSS equivalent (the feed can't take t=week), and the
+  // weekly top pull is a Sunday bonus, so on JSON failure we simply skip it.
+  return json ?? [];
 }

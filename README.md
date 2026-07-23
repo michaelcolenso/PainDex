@@ -22,6 +22,18 @@ Cloudflare Workers, Hono, D1, KV, Vectorize, Workers AI, Drizzle, Wrangler.
 - **`/review`**: token-protected, server-rendered HTML table with
   client-side sort/filter and inline status/label/notes editing.
 
+### Reddit access (no API key)
+
+Ingest reads Reddit's **public endpoints** — no OAuth, no registered app, no
+paid tier. It fetches the anonymous `.json` listing first and falls back to the
+`.rss` feed when Reddit refuses the JSON path, pacing ~1 request/6s to stay
+within the anonymous ~10 req/min budget. The RSS fallback carries less (no
+score/comment counts, which default to `0`), but keeps prefilter and
+classification alive. Caveat: Reddit sometimes rate-limits or blocks
+datacenter/Workers egress IPs; if the JSON path starts 403ing in production, the
+RSS fallback is the safety net, and persistent failures deactivate a subreddit
+after five consecutive misses.
+
 ## One-time setup
 
 1. Install dependencies:
@@ -48,15 +60,19 @@ Cloudflare Workers, Hono, D1, KV, Vectorize, Workers AI, Drizzle, Wrangler.
 
    (Use the `:local` variants against `wrangler dev` for local development.)
 
-4. Create a Reddit "script" app at <https://www.reddit.com/prefs/apps> and
-   set secrets:
+4. Set secrets. Reddit access uses **public, unauthenticated endpoints** — no
+   app registration, OAuth, or API key required — so only two secrets matter:
 
    ```sh
-   npx wrangler secret put REDDIT_CLIENT_ID
-   npx wrangler secret put REDDIT_CLIENT_SECRET
+   npx wrangler secret put AHREFS_API_KEY  # weekly enrichment; omit to skip enrich
+   npx wrangler secret put REVIEW_TOKEN    # gates the /review page
+   ```
+
+   Optionally set `REDDIT_USERNAME` (a Reddit handle, not a login) — it's folded
+   into the request User-Agent as courtesy contact info and can be left unset:
+
+   ```sh
    npx wrangler secret put REDDIT_USERNAME
-   npx wrangler secret put AHREFS_API_KEY
-   npx wrangler secret put REVIEW_TOKEN
    ```
 
 5. Deploy:
