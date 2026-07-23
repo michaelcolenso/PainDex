@@ -6,7 +6,10 @@ import { api } from "./routes/api";
 import { runIngestBatch } from "./cron/ingest";
 import { runWeeklyEnrich } from "./cron/enrich";
 
-const ENRICH_CRON = "0 12 * * 0";
+// Cloudflare's cron validator rejects numeric day-of-week 0, so the Sunday
+// enrich trigger uses SUN; this must match the schedule in wrangler.toml exactly
+// since `scheduled` dispatches by comparing against the delivered cron string.
+const ENRICH_CRON = "0 12 * * SUN";
 
 const app = new Hono<{ Bindings: Env }>();
 
