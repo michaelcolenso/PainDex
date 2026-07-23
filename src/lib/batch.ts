@@ -1,3 +1,14 @@
+// Split a list into consecutive chunks of at most `size`. Used to keep D1
+// queries under its 100-bound-parameter-per-query cap.
+export function chunk<T>(items: readonly T[], size: number): T[][] {
+  if (size < 1) throw new Error("chunk size must be >= 1");
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    out.push(items.slice(i, i + size));
+  }
+  return out;
+}
+
 export interface BatchSelection<T> {
   batch: T[]; // the next slice to process, up to batchSize items
   hasMore: boolean; // whether any items remain after this batch
