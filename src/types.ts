@@ -4,9 +4,9 @@ export interface Env {
   VECTORIZE: VectorizeIndex;
   AI: Ai;
 
-  REDDIT_CLIENT_ID: string;
-  REDDIT_CLIENT_SECRET: string;
-  REDDIT_USERNAME: string;
+  // Public Reddit access needs no credentials. REDDIT_USERNAME is optional
+  // contact info folded into the User-Agent; leave it unset and it's omitted.
+  REDDIT_USERNAME?: string;
   AHREFS_API_KEY: string;
   REVIEW_TOKEN: string;
 }

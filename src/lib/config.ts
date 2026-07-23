@@ -3,7 +3,6 @@ export const KV_KEYS = {
   prefilterPatterns: "prefilter:patterns",
   clusterThreshold: "cluster:threshold",
   scoringWeights: "scoring:weights",
-  redditToken: "reddit:token",
 } as const;
 
 export interface PrefilterPatterns {
