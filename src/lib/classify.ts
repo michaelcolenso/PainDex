@@ -1,9 +1,9 @@
 import type { Env } from "../types";
 
-// Update if Cloudflare ships a newer/cheaper instruct model; verify
-// availability at developers.cloudflare.com/workers-ai/models/ before
-// swapping, since Workers AI model slugs change over time.
-const MODEL = "@cf/meta/llama-3.1-8b-instruct";
+// Workers AI model slugs get deprecated over time (the previous
+// llama-3.1-8b-instruct was retired 2026-05-30, returning error 5028). Verify
+// availability at developers.cloudflare.com/workers-ai/models/ before swapping.
+const MODEL = "@cf/meta/llama-3.2-3b-instruct";
 
 const SYSTEM_PROMPT = `You classify Reddit posts for commercial pain signals. Respond with ONLY a JSON object, no markdown, no preamble.
 

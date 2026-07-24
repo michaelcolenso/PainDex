@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectBatch } from "../src/lib/batch";
+import { chunk, selectBatch } from "../src/lib/batch";
 
 interface Sub {
   name: string;
@@ -8,6 +8,39 @@ interface Sub {
 function subs(...names: string[]): Sub[] {
   return names.map((name) => ({ name }));
 }
+
+describe("chunk", () => {
+  it("splits a list into consecutive chunks of at most `size`", () => {
+    expect(chunk([1, 2, 3, 4, 5], 2)).toEqual([[1, 2], [3, 4], [5]]);
+  });
+
+  it("returns a single chunk when the list fits", () => {
+    expect(chunk([1, 2, 3], 10)).toEqual([[1, 2, 3]]);
+  });
+
+  it("returns no chunks for an empty list", () => {
+    expect(chunk([], 5)).toEqual([]);
+  });
+
+  it("covers every element exactly once with no overlap", () => {
+    const items = Array.from({ length: 125 }, (_, i) => i); // e.g. a full new+top listing
+    const chunks = chunk(items, 90);
+    expect(chunks.map((c) => c.length)).toEqual([90, 35]);
+    expect(chunks.flat()).toEqual(items);
+    expect(Math.max(...chunks.map((c) => c.length))).toBeLessThanOrEqual(90);
+  });
+
+  it("keeps a post-insert chunk within D1's parameter budget (9 params/row)", () => {
+    const rows = Array.from({ length: 100 }, (_, i) => i);
+    for (const c of chunk(rows, 10)) {
+      expect(c.length * 9).toBeLessThan(100);
+    }
+  });
+
+  it("rejects a non-positive chunk size", () => {
+    expect(() => chunk([1], 0)).toThrow();
+  });
+});
 
 describe("selectBatch", () => {
   it("returns the first batch when the cursor is empty", () => {

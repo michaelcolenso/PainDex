@@ -7,11 +7,15 @@ import { getPrefilterPatterns } from "../lib/config";
 import { passesPrefilter } from "../lib/prefilter";
 import { classifyPost } from "../lib/classify";
 import { assignToCluster } from "../lib/cluster";
-import { selectBatch } from "../lib/batch";
+import { chunk, selectBatch } from "../lib/batch";
 
 const BATCH_SIZE = 10;
 const MAX_CONSECUTIVE_FAILURES = 5;
 const MIN_COMMERCIAL_INTENT = 3;
+// Chunk sizes chosen to stay under D1's 100-bound-parameter-per-query cap:
+// id lookups bind 1 param each; post inserts bind 9 columns per row.
+const ID_LOOKUP_CHUNK = 90;
+const POST_INSERT_CHUNK = 10;
 
 interface IngestCursor {
   runId: number;
@@ -103,13 +107,15 @@ export async function runIngestBatch(env: Env): Promise<void> {
 
     if (listing.length === 0) continue;
 
+    // D1 caps bound parameters per query at 100. `inArray` binds one param per
+    // id and a listing can carry ~125 posts (new + top), so look up existing
+    // ids in chunks.
     const fullnames = listing.map((p) => p.name);
-    const existing = await db
-      .select({ id: posts.id })
-      .from(posts)
-      .where(inArray(posts.id, fullnames))
-      .all();
-    const existingIds = new Set(existing.map((r) => r.id));
+    const existingIds = new Set<string>();
+    for (const idChunk of chunk(fullnames, ID_LOOKUP_CHUNK)) {
+      const existing = await db.select({ id: posts.id }).from(posts).where(inArray(posts.id, idChunk)).all();
+      for (const row of existing) existingIds.add(row.id);
+    }
     const newListingPosts = listing.filter((p) => !existingIds.has(p.name));
     if (newListingPosts.length === 0) continue;
 
@@ -121,20 +127,24 @@ export async function runIngestBatch(env: Env): Promise<void> {
       return true;
     });
 
-    await db
-      .insert(posts)
-      .values(
-        rows.map((p) => ({
-          id: p.name,
-          subreddit: sub.name,
-          title: p.title,
-          excerpt: (p.selftext ?? "").slice(0, 500),
-          createdUtc: Math.floor(p.created_utc),
-          score: p.score ?? 0,
-          numComments: p.num_comments ?? 0,
-        })),
-      )
-      .onConflictDoNothing();
+    // Each row binds nine columns (seven set here plus two non-null defaults),
+    // so chunk inserts to stay under D1's 100-parameter cap.
+    for (const rowChunk of chunk(rows, POST_INSERT_CHUNK)) {
+      await db
+        .insert(posts)
+        .values(
+          rowChunk.map((p) => ({
+            id: p.name,
+            subreddit: sub.name,
+            title: p.title,
+            excerpt: (p.selftext ?? "").slice(0, 500),
+            createdUtc: Math.floor(p.created_utc),
+            score: p.score ?? 0,
+            numComments: p.num_comments ?? 0,
+          })),
+        )
+        .onConflictDoNothing();
+    }
 
     for (const p of rows) {
       const excerpt = (p.selftext ?? "").slice(0, 500);
