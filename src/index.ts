@@ -4,6 +4,7 @@ import { reviewAuth } from "./lib/auth";
 import { review } from "./routes/review";
 import { pipeline } from "./routes/pipeline";
 import { api } from "./routes/api";
+import { pipelineApi } from "./routes/pipelineApi";
 import { runIngestBatch } from "./cron/ingest";
 import { runWeeklyEnrich } from "./cron/enrich";
 
@@ -23,6 +24,7 @@ app.use("/api/*", reviewAuth);
 app.route("/review", review);
 app.route("/pipeline", pipeline);
 app.route("/api", api);
+app.route("/api", pipelineApi);
 
 export default {
   fetch: app.fetch,
