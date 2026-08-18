@@ -63,7 +63,9 @@ api.post("/clusters/:id/status", async (c) => {
 api.post("/clusters/:id", async (c) => {
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id)) return c.text("Invalid cluster id", 400);
-  const body = await c.req.json<{ label?: string; notes?: string }>().catch(() => ({}));
+  const body = await c.req
+    .json<{ label?: string; notes?: string }>()
+    .catch(() => ({}) as { label?: string; notes?: string });
   const update: Partial<{ label: string; notes: string }> = {};
   if (typeof body.label === "string") update.label = body.label;
   if (typeof body.notes === "string") update.notes = body.notes;
@@ -172,7 +174,9 @@ api.post("/clusters/:id/build", async (c) => {
 });
 
 api.post("/subreddits", async (c) => {
-  const body = await c.req.json<{ name?: string; category?: string; subscribers?: number }>().catch(() => ({}));
+  const body = await c.req
+    .json<{ name?: string; category?: string; subscribers?: number }>()
+    .catch(() => ({}) as { name?: string; category?: string; subscribers?: number });
   if (!body.name) return c.text("name is required", 400);
   const db = drizzle(c.env.DB);
   await db.insert(subreddits).values({
