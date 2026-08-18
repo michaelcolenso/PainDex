@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeOpportunityScore, type ScoringInput } from "../src/lib/scoring";
+import { computeOpportunityScore, computeOpportunityScoreFactors, type ScoringInput } from "../src/lib/scoring";
 import { DEFAULT_SCORING_WEIGHTS } from "../src/lib/config";
 
 const w = DEFAULT_SCORING_WEIGHTS;
@@ -13,8 +13,6 @@ function score(overrides: Partial<ScoringInput>): number {
 
 describe("computeOpportunityScore", () => {
   it("returns a neutral baseline when every signal is null/zero", () => {
-    // volume 0 -> demand 0; kd null -> 50 -> ease = 50 * 0.3 = 15; pain 0;
-    // intent null -> 0; velocity null -> 1 -> momentum = clamp(0,...) = 0.
     expect(score({})).toBeCloseTo(15, 6);
   });
 
@@ -26,7 +24,6 @@ describe("computeOpportunityScore", () => {
     const low = score({ volume: 10 });
     const high = score({ volume: 10_000 });
     expect(high).toBeGreaterThan(low);
-    // demand = log10(volume + 1) * 12
     expect(high - low).toBeCloseTo((Math.log10(10_001) - Math.log10(11)) * w.demandMultiplier, 6);
   });
 
@@ -57,26 +54,24 @@ describe("computeOpportunityScore", () => {
   });
 
   it("clamps momentum to its configured floor and ceiling", () => {
-    const surging = score({ velocity30d: 100 }); // (100-1)*10 = 990 -> clamp to max
-    const collapsing = score({ velocity30d: 0 }); // (0-1)*10 = -10 -> clamp to min
+    const surging = score({ velocity30d: 100 });
+    const collapsing = score({ velocity30d: 0 });
     const steady = score({ velocity30d: 1 });
     expect(surging - steady).toBeCloseTo(w.momentumMax, 6);
     expect(collapsing - steady).toBeCloseTo(w.momentumMin, 6);
   });
 
-  it("combines all five terms additively", () => {
-    const input: ScoringInput = {
-      volume: 1000,
-      kd: 20,
-      postCount: 8,
-      avgIntent: 4,
-      velocity30d: 2,
-    };
-    const demand = Math.log10(1001) * w.demandMultiplier;
-    const ease = (100 - 20) * w.easeMultiplier;
-    const pain = 8 * w.painMultiplier;
-    const intent = 4 * w.intentMultiplier;
-    const momentum = (2 - 1) * w.momentumMultiplier;
-    expect(computeOpportunityScore(input, w)).toBeCloseTo(demand + ease + pain + intent + momentum, 6);
+  it("exposes the exact five production factors used by the total", () => {
+    const input: ScoringInput = { volume: 1000, kd: 20, postCount: 8, avgIntent: 4, velocity30d: 2 };
+    const factors = computeOpportunityScoreFactors(input, w);
+    expect(factors.demand).toBeCloseTo(Math.log10(1001) * w.demandMultiplier, 6);
+    expect(factors.ease).toBeCloseTo((100 - 20) * w.easeMultiplier, 6);
+    expect(factors.pain).toBeCloseTo(8 * w.painMultiplier, 6);
+    expect(factors.intent).toBeCloseTo(4 * w.intentMultiplier, 6);
+    expect(factors.momentum).toBeCloseTo((2 - 1) * w.momentumMultiplier, 6);
+    expect(computeOpportunityScore(input, w)).toBeCloseTo(
+      factors.demand + factors.ease + factors.pain + factors.intent + factors.momentum,
+      6,
+    );
   });
 });
