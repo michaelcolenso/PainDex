@@ -2,7 +2,9 @@ import { Hono } from "hono";
 import type { Env } from "./types";
 import { reviewAuth } from "./lib/auth";
 import { review } from "./routes/review";
+import { pipeline } from "./routes/pipeline";
 import { api } from "./routes/api";
+import { pipelineApi } from "./routes/pipelineApi";
 import { runIngestBatch } from "./cron/ingest";
 import { runWeeklyEnrich } from "./cron/enrich";
 
@@ -13,13 +15,16 @@ const ENRICH_CRON = "0 12 * * SUN";
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.get("/", (c) => c.text("PainDex is running. See /review?token=... for the opportunity table."));
+app.get("/", (c) => c.text("PainDex is running. See /review?token=... for discovery or /pipeline?token=... for active opportunities."));
 
 app.use("/review", reviewAuth);
+app.use("/pipeline", reviewAuth);
 app.use("/api/*", reviewAuth);
 
 app.route("/review", review);
+app.route("/pipeline", pipeline);
 app.route("/api", api);
+app.route("/api", pipelineApi);
 
 export default {
   fetch: app.fetch,
