@@ -4,6 +4,9 @@
   "private": true,
   "description": "Nightly Reddit pain-point discovery pipeline: ingest, classify, cluster, enrich, review.",
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
