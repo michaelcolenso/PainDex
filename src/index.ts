@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import type { Env } from "./types";
 import { reviewAuth } from "./lib/auth";
 import { promoteStatusDecision, seedPromotionSnapshot } from "./lib/promotionSnapshot";
+import { decision } from "./routes/decision";
 import { review } from "./routes/review";
 import { pipeline } from "./routes/pipeline";
 import { api } from "./routes/api";
@@ -16,16 +17,18 @@ const ENRICH_CRON = "0 12 * * SUN";
 
 const app = new Hono<{ Bindings: Env }>();
 
-app.get("/", (c) => c.text("PainDex is running. See /review?token=... for discovery or /pipeline?token=... for active opportunities."));
+app.get("/", (c) => c.text("PainDex is running. /review is the Decision Room; /signals exposes the raw discovery queue; /pipeline is the secondary workflow/debug view."));
 
 app.use("/review", reviewAuth);
+app.use("/signals", reviewAuth);
 app.use("/pipeline", reviewAuth);
 app.use("/api/*", reviewAuth);
 app.use("/api/clusters/:id/status", promoteStatusDecision);
 app.use("/api/clusters/:id/promote", seedPromotionSnapshot);
 app.use("/api/clusters/:id/build", seedPromotionSnapshot);
 
-app.route("/review", review);
+app.route("/review", decision);
+app.route("/signals", review);
 app.route("/pipeline", pipeline);
 app.route("/api", api);
 app.route("/api", pipelineApi);
