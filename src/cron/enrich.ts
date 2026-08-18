@@ -1,9 +1,9 @@
 import { and, eq, gte, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { Env } from "../types";
-import { clusters, runs } from "../db/schema";
+import { clusters, opportunities, runs, scoreSnapshots } from "../db/schema";
 import { fetchKeywordMetrics } from "../lib/ahrefs";
-import { computeOpportunityScore } from "../lib/scoring";
+import { computeOpportunityScore, computeOpportunityScoreFactors } from "../lib/scoring";
 import { getScoringWeights } from "../lib/config";
 
 const KEYWORD_ELIGIBILITY_MIN_POSTS = 3;
@@ -53,6 +53,7 @@ export async function runWeeklyEnrich(env: Env): Promise<void> {
   }
 
   await rescoreClusters(env);
+  await snapshotPromotedOpportunities(env, startedAt);
 
   await db
     .update(runs)
@@ -113,10 +114,52 @@ async function rescoreClusters(env: Env): Promise<void> {
   await runBatch(db, updates);
 }
 
+async function snapshotPromotedOpportunities(env: Env, capturedAt: string): Promise<void> {
+  const db = drizzle(env.DB);
+  const weights = await getScoringWeights(env.KV);
+  const rows = await db
+    .select({
+      opportunityId: opportunities.id,
+      volume: clusters.volume,
+      kd: clusters.kd,
+      postCount: clusters.postCount,
+      avgIntent: clusters.avgIntent,
+      velocity30d: clusters.velocity30d,
+      opportunityScore: clusters.opportunityScore,
+    })
+    .from(opportunities)
+    .innerJoin(clusters, eq(opportunities.clusterId, clusters.id))
+    .all();
+
+  const inserts = rows
+    .filter((row) => row.opportunityScore !== null)
+    .map((row) => {
+      const input = {
+        volume: row.volume,
+        kd: row.kd,
+        postCount: row.postCount,
+        avgIntent: row.avgIntent,
+        velocity30d: row.velocity30d,
+      };
+      const factors = computeOpportunityScoreFactors(input, weights);
+      return db.insert(scoreSnapshots).values({
+        opportunityId: row.opportunityId,
+        score: row.opportunityScore,
+        demand: factors.demand,
+        ease: factors.ease,
+        pain: factors.pain,
+        intent: factors.intent,
+        momentum: factors.momentum,
+        capturedAt,
+      });
+    });
+  if (inserts.length > 0) await runBatch(db, inserts);
+}
+
 // D1 batch() requires a non-empty tuple typed as [first, ...rest]; chunk to
 // stay well under D1's per-batch statement ceiling too. `any` here is the
 // pragmatic escape hatch for drizzle's batch tuple typing -- statements are
-// always update() builders constructed just above each call site.
+// always update()/insert() builders constructed just above each call site.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function runBatch(db: ReturnType<typeof drizzle>, statements: any[]): Promise<void> {
   const CHUNK = 50;
