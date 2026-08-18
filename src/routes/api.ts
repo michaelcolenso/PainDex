@@ -4,6 +4,7 @@ import { drizzle } from "drizzle-orm/d1";
 import type { Env } from "../types";
 import { clusters, posts, subreddits } from "../db/schema";
 import { redditPermalink } from "../lib/auth";
+import { analyzeOpportunity } from "../lib/analyzeOpportunity";
 
 const VALID_STATUSES = new Set(["new", "watching", "pursue", "killed"]);
 
@@ -50,7 +51,45 @@ api.get("/clusters/:id/posts", async (c) => {
       id: posts.id,
       subreddit: posts.subreddit,
       title: posts.title,
+      excerpt: posts.excerpt,
       createdUtc: posts.createdUtc,
+      commercialIntent: posts.commercialIntent,
+      painCategory: posts.painCategory,
+    })
+    .from(posts)
+    .where(eq(posts.clusterId, id))
+    .orderBy(desc(posts.createdUtc))
+    .limit(12)
+    .all();
+
+  return c.json(
+    rows.map((r) => ({
+      title: r.title,
+      excerpt: r.excerpt,
+      subreddit: r.subreddit,
+      createdUtc: r.createdUtc,
+      commercialIntent: r.commercialIntent,
+      painCategory: r.painCategory,
+      permalink: redditPermalink(r.subreddit, r.id),
+    })),
+  );
+});
+
+api.post("/clusters/:id/analyze", async (c) => {
+  const id = Number(c.req.param("id"));
+  if (!Number.isInteger(id)) return c.text("Invalid cluster id", 400);
+
+  const db = drizzle(c.env.DB);
+  const cluster = await db.select().from(clusters).where(eq(clusters.id, id)).get();
+  if (!cluster) return c.text("Cluster not found", 404);
+
+  const evidence = await db
+    .select({
+      subreddit: posts.subreddit,
+      title: posts.title,
+      excerpt: posts.excerpt,
+      commercialIntent: posts.commercialIntent,
+      painCategory: posts.painCategory,
     })
     .from(posts)
     .where(eq(posts.clusterId, id))
@@ -58,14 +97,23 @@ api.get("/clusters/:id/posts", async (c) => {
     .limit(10)
     .all();
 
-  return c.json(
-    rows.map((r) => ({
-      title: r.title,
-      subreddit: r.subreddit,
-      createdUtc: r.createdUtc,
-      permalink: redditPermalink(r.subreddit, r.id),
-    })),
-  );
+  try {
+    const analysis = await analyzeOpportunity(c.env, {
+      label: cluster.label,
+      postCount: cluster.postCount,
+      velocity30d: cluster.velocity30d,
+      volume: cluster.volume,
+      kd: cluster.kd,
+      cpc: cluster.cpc,
+      avgIntent: cluster.avgIntent,
+      opportunityScore: cluster.opportunityScore,
+      evidence,
+    });
+    return c.json(analysis);
+  } catch (error) {
+    console.error("opportunity analysis failed", error);
+    return c.json({ error: "analysis_failed" }, 502);
+  }
 });
 
 api.post("/subreddits", async (c) => {
