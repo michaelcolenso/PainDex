@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "./types";
 import { reviewAuth } from "./lib/auth";
+import { seedPromotionSnapshot } from "./lib/promotionSnapshot";
 import { review } from "./routes/review";
 import { pipeline } from "./routes/pipeline";
 import { api } from "./routes/api";
@@ -20,6 +21,8 @@ app.get("/", (c) => c.text("PainDex is running. See /review?token=... for discov
 app.use("/review", reviewAuth);
 app.use("/pipeline", reviewAuth);
 app.use("/api/*", reviewAuth);
+app.use("/api/clusters/:id/promote", seedPromotionSnapshot);
+app.use("/api/clusters/:id/build", seedPromotionSnapshot);
 
 app.route("/review", review);
 app.route("/pipeline", pipeline);
