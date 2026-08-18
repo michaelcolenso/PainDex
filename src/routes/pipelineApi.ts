@@ -28,7 +28,7 @@ const RESOURCE_CONFIG: Record<Resource, { fields: string[]; required: string[] }
   },
 };
 
-function opportunityId(c: Parameters<typeof pipelineApi.get>[1] extends never ? never : any): number {
+function opportunityId(c: { req: { param: (name: string) => string } }): number {
   return Number(c.req.param("id"));
 }
 
@@ -48,8 +48,9 @@ function cleanBody(body: Record<string, unknown>, allowed: string[]): Record<str
   return result;
 }
 
-async function jsonBody(c: any): Promise<Record<string, unknown>> {
-  return c.req.json<Record<string, unknown>>().catch(() => ({}));
+async function jsonBody(c: { req: { json: () => Promise<unknown> } }): Promise<Record<string, unknown>> {
+  const raw = await c.req.json().catch(() => ({}));
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
 }
 
 function resourceName(value: string): Resource | null {
