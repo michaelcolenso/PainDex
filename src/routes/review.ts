@@ -13,10 +13,12 @@ interface ClusterRow {
   velocity30d: number | null;
   volume: number | null;
   kd: number | null;
+  cpc: number | null;
   avgIntent: number | null;
   opportunityScore: number | null;
   status: string;
   firstSeen: string;
+  lastSeen: string;
   notes: string | null;
   subs: string;
 }
@@ -24,279 +26,74 @@ interface ClusterRow {
 review.get("/", async (c) => {
   const db = drizzle(c.env.DB);
   const rows = await db.select().from(clusters).orderBy(desc(clusters.opportunityScore)).all();
-
-  const { results: subsByCluster } = await c.env.DB.prepare(
+  const { results } = await c.env.DB.prepare(
     `SELECT cluster_id AS clusterId, GROUP_CONCAT(DISTINCT subreddit) AS subs
      FROM posts WHERE cluster_id IS NOT NULL GROUP BY cluster_id`,
   ).all<{ clusterId: number; subs: string }>();
-  const subsMap = new Map(subsByCluster.map((r) => [r.clusterId, r.subs ?? ""]));
-
-  const data: ClusterRow[] = rows.map((r) => ({
-    id: r.id,
-    label: r.label,
-    postCount: r.postCount,
-    velocity30d: r.velocity30d,
-    volume: r.volume,
-    kd: r.kd,
-    avgIntent: r.avgIntent,
-    opportunityScore: r.opportunityScore,
-    status: r.status,
-    firstSeen: r.firstSeen,
-    notes: r.notes,
-    subs: subsMap.get(r.id) ?? "",
-  }));
-
-  const token = c.req.query("token") ?? "";
-  return c.html(renderPage(data, token));
+  const subs = new Map(results.map((r) => [r.clusterId, r.subs ?? ""]));
+  const data: ClusterRow[] = rows.map((r) => ({ ...r, subs: subs.get(r.id) ?? "" }));
+  return c.html(renderPage(data, c.req.query("token") ?? ""));
 });
 
 function esc(value: string | number | null): string {
-  return String(value ?? "").replace(/[&<>"']/g, (ch) => {
-    switch (ch) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
+  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[ch] ?? ch));
 }
 
 function fmt(value: number | null, digits = 0): string {
   return value === null || value === undefined ? "—" : value.toFixed(digits);
 }
 
-function renderRow(row: ClusterRow): string {
-  const highPainNoVolume = (row.volume ?? 0) === 0 && row.postCount >= 8;
-  return `
-<tr class="cluster-row" data-id="${row.id}" data-status="${esc(row.status)}" data-high-pain="${highPainNoVolume}"
-    data-label="${esc(row.label.toLowerCase())}" data-subs="${esc(row.subs.toLowerCase())}"
-    data-post-count="${row.postCount}" data-velocity="${row.velocity30d ?? -1}"
-    data-volume="${row.volume ?? -1}" data-kd="${row.kd ?? -1}" data-intent="${row.avgIntent ?? -1}"
-    data-score="${row.opportunityScore ?? -1}" data-first-seen="${esc(row.firstSeen)}">
-  <td class="label-cell">
-    <span class="label-text">${esc(row.label)}</span>
-    <input class="label-input hidden" value="${esc(row.label)}" />
-  </td>
-  <td class="subs-cell">${esc(row.subs)}</td>
-  <td class="num">${row.postCount}</td>
-  <td class="num">${fmt(row.velocity30d, 2)}</td>
-  <td class="num">${row.volume ?? "—"}</td>
-  <td class="num">${row.kd ?? "—"}</td>
-  <td class="num">${fmt(row.avgIntent, 1)}</td>
-  <td class="num score">${fmt(row.opportunityScore, 1)}</td>
-  <td class="status-cell">
-    <select class="status-select">
-      ${["new", "watching", "pursue", "killed"]
-        .map((s) => `<option value="${s}" ${s === row.status ? "selected" : ""}>${s}</option>`)
-        .join("")}
-    </select>
-  </td>
-  <td>${esc(row.firstSeen).slice(0, 10)}</td>
-</tr>
-<tr class="detail-row hidden" data-detail-for="${row.id}">
-  <td colspan="9">
-    <div class="notes-block">
-      <label>Notes</label>
-      <textarea class="notes-input">${esc(row.notes ?? "")}</textarea>
-      <button class="save-notes">Save label &amp; notes</button>
-    </div>
-    <div class="posts-block">Loading recent posts…</div>
-  </td>
-</tr>`;
+function rowHtml(row: ClusterRow): string {
+  const score = row.opportunityScore ?? 0;
+  const sources = row.subs.split(",").filter(Boolean).map((s) => `r/${esc(s)}`).join(" · ");
+  const unpriced = (row.volume ?? 0) === 0 && row.postCount >= 8;
+  return `<button class="opp" type="button" data-id="${row.id}" data-score="${score}" data-status="${esc(row.status)}" data-unpriced="${unpriced}" data-search="${esc(`${row.label} ${row.subs}`.toLowerCase())}">
+    <span class="score">${fmt(row.opportunityScore)}</span>
+    <span class="opp-body">
+      <span class="opp-title"><strong>${esc(row.label)}</strong><i class="pill ${esc(row.status)}">${esc(row.status)}</i></span>
+      <small>${sources || "No source subreddit"}</small>
+      <span class="metrics"><b><em>Pain</em>${row.postCount} posts</b><b><em>Velocity</em>${fmt(row.velocity30d, 1)}×</b><b><em>Search</em>${row.volume === null ? "—" : row.volume.toLocaleString()}</b><b><em>KD</em>${row.kd ?? "—"}</b><b><em>Intent</em>${fmt(row.avgIntent, 1)}/10</b></span>
+      <span class="track"><u style="width:${Math.max(0, Math.min(100, score))}%"></u></span>
+    </span>
+  </button>`;
 }
 
 function renderPage(data: ClusterRow[], token: string): string {
-  const rowsHtml = data.map(renderRow).join("\n");
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>PainDex Review</title>
+  const serialized = JSON.stringify(data).replace(/</g, "\\u003c");
+  const active = data.filter((r) => r.status !== "killed");
+  const newCount = data.filter((r) => r.status === "new").length;
+  const strong = active.filter((r) => (r.opportunityScore ?? 0) >= 70).length;
+  const pursuing = data.filter((r) => r.status === "pursue").length;
+  const unpriced = active.filter((r) => (r.volume ?? 0) === 0 && r.postCount >= 8).length;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>PainDex · Opportunity Console</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 1.5rem; }
-  h1 { font-size: 1.25rem; margin: 0 0 0.75rem; }
-  .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
-  .tabs button { padding: 0.4rem 0.8rem; border: 1px solid #8884; border-radius: 6px; background: none; cursor: pointer; }
-  .tabs button.active { background: #4a90d922; border-color: #4a90d9; font-weight: 600; }
-  table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
-  th, td { padding: 0.4rem 0.6rem; border-bottom: 1px solid #8883; text-align: left; }
-  th { cursor: pointer; user-select: none; white-space: nowrap; }
-  th.sorted::after { content: " " attr(data-dir); }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  tr.cluster-row { cursor: pointer; }
-  tr.cluster-row:hover { background: #8881; }
-  .hidden { display: none !important; }
-  .notes-block { margin-bottom: 0.75rem; }
-  .notes-input { width: 100%; min-height: 4rem; box-sizing: border-box; }
-  .posts-block a { display: block; padding: 0.15rem 0; }
-  .label-input { width: 100%; box-sizing: border-box; }
-  select.status-select { font-size: 0.85rem; }
-</style>
-</head>
-<body>
-<h1>PainDex Review</h1>
-<div class="tabs" id="tabs">
-  <button data-filter="all" class="active">All</button>
-  <button data-filter="new">New</button>
-  <button data-filter="watching">Watching</button>
-  <button data-filter="pursue">Pursue</button>
-  <button data-filter="high-pain">High pain, no volume</button>
-</div>
-<table id="clusters-table">
-  <thead>
-    <tr>
-      <th data-key="label">Label</th>
-      <th data-key="subs">Subreddits</th>
-      <th data-key="post-count">Posts</th>
-      <th data-key="velocity">Velocity 30d</th>
-      <th data-key="volume">Volume</th>
-      <th data-key="kd">KD</th>
-      <th data-key="intent">Avg Intent</th>
-      <th data-key="score">Score</th>
-      <th data-key="status">Status</th>
-      <th data-key="first-seen">First Seen</th>
-    </tr>
-  </thead>
-  <tbody>
-${rowsHtml}
-  </tbody>
-</table>
+:root{--bg:#090b0e;--panel:#111419;--panel2:#161a20;--line:#292f38;--text:#f4f6f8;--muted:#9099a5;--accent:#e7ff57;--accent2:#a7bc31;--good:#69dc98;--warn:#f6ca62;--bad:#ff7777;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-size:14px}.shell{max-width:1480px;margin:auto;padding:28px}.head{display:flex;justify-content:space-between;align-items:end;gap:18px}.eyebrow{font:700 11px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.17em;color:var(--accent)}h1{font-size:28px;letter-spacing:-.04em;margin:8px 0 4px}.muted,.head p{color:var(--muted);margin:0}.btn,.filter{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:9px;padding:9px 12px;font:inherit;cursor:pointer}.btn:hover,.filter:hover{border-color:#4b5562}.primary{background:var(--accent);border-color:var(--accent);color:#111500;font-weight:750}.danger{color:var(--bad)}.actions{display:flex;gap:7px;flex-wrap:wrap}.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:23px 0}.kpi{border:1px solid var(--line);background:var(--panel);padding:14px;border-radius:12px}.kpi label{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.07em}.kpi strong{display:block;font-size:28px;margin:3px 0;letter-spacing:-.04em}.kpi small{color:var(--muted)}.toolbar{display:flex;gap:10px;margin-bottom:13px}.search{flex:1;min-width:230px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:11px 12px;color:var(--text);font:inherit;outline:none}.search:focus{border-color:var(--accent2)}.filters{display:flex;gap:6px;flex-wrap:wrap}.filter.active{border-color:#65732b;background:#242a17;color:var(--accent)}.queue-head{display:flex;justify-content:space-between;margin:17px 2px 8px}.queue{display:grid;gap:7px}.opp{width:100%;display:flex;gap:14px;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;color:var(--text);cursor:pointer}.opp:hover{background:var(--panel2);border-color:#444d59}.opp.hidden{display:none}.score{width:48px;height:48px;border-radius:999px;border:3px solid var(--accent);display:grid;place-items:center;flex:none;font:750 15px ui-monospace,SFMono-Regular,Menlo,monospace}.opp-body{min-width:0;flex:1}.opp-title{display:flex;justify-content:space-between;gap:12px}.opp-title strong{font-size:15px}.opp small{display:block;color:var(--muted);margin-top:4px}.pill{font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace;font-style:normal;text-transform:uppercase;letter-spacing:.07em;border:1px solid var(--line);padding:4px 7px;border-radius:999px;color:var(--muted)}.pill.pursue{color:var(--good);border-color:#315942}.pill.watching{color:var(--warn);border-color:#5b4f2e}.pill.killed{color:var(--bad);border-color:#603738}.metrics{display:grid;grid-template-columns:repeat(5,minmax(85px,1fr));gap:14px;margin-top:12px}.metrics b{font-weight:500;font-variant-numeric:tabular-nums}.metrics em{display:block;font-style:normal;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:2px}.track{display:block;height:3px;background:#262b32;margin-top:11px;border-radius:4px;overflow:hidden}.track u{display:block;height:100%;background:var(--accent);text-decoration:none}.backdrop{position:fixed;inset:0;background:#000a;display:none;z-index:20}.backdrop.open{display:block}.drawer{position:fixed;top:0;right:0;width:min(820px,96vw);height:100vh;background:#0e1115;border-left:1px solid var(--line);transform:translateX(100%);transition:.18s transform ease;overflow:auto;z-index:21}.drawer.open{transform:none}.drawer-in{padding:24px}.drawer-head{display:flex;justify-content:space-between;gap:10px}.drawer h2{font-size:24px;letter-spacing:-.035em;margin:12px 0 5px}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin:18px 0}.stat,.factor,.brief-card{border:1px solid var(--line);background:var(--panel);border-radius:10px;padding:10px}.stat label,.factor label{display:block;color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.07em}.stat strong{display:block;margin-top:5px}.section{border-top:1px solid var(--line);margin-top:19px;padding-top:18px}.section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:10px}.section h3{font-size:12px;text-transform:uppercase;letter-spacing:.09em;margin:0}.chart{height:92px;display:flex;align-items:end;gap:6px;border-bottom:1px solid var(--line);padding:7px 2px 0}.bar-wrap{height:100%;flex:1;display:flex;align-items:end;position:relative}.bar{width:100%;min-height:2px;background:var(--accent);border-radius:4px 4px 0 0;opacity:.82}.bar-wrap span{position:absolute;bottom:-20px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--muted)}.trend-label{margin-top:22px;color:var(--muted);font-size:11px}.factor-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:7px}.factor strong{display:block;font-size:18px;margin:5px 0}.factor-track{height:4px;background:#252a31;border-radius:3px;overflow:hidden}.factor-track i{display:block;height:100%;background:var(--accent)}.evidence{display:grid;gap:7px}.post{border:1px solid var(--line);background:var(--panel);border-radius:9px;padding:11px}.post a{color:var(--text);font-weight:650;text-decoration:none}.post a:hover{text-decoration:underline}.post-meta{font-size:11px;color:var(--muted);margin-bottom:5px}.post p{font-size:12px;line-height:1.5;color:#cfd5dc;margin:6px 0 0}.analysis{display:none}.analysis.show{display:block}.why{line-height:1.55;color:#d8dde4}.ideas{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:10px 0}.idea{border:1px solid var(--line);background:var(--panel);border-radius:9px;padding:10px}.idea strong{display:block}.idea span{display:block;color:var(--muted);font-size:12px;line-height:1.4;margin-top:4px}.cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}.cols h4{font-size:11px;text-transform:uppercase;letter-spacing:.07em;margin:4px 0}.cols ol,.cols ul{padding-left:18px;margin:0;line-height:1.55;color:#d3d8df}.verdict{display:inline-block;margin-top:10px;color:var(--accent);font:700 11px ui-monospace,SFMono-Regular,Menlo,monospace;text-transform:uppercase}.notes{width:100%;min-height:82px;background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:10px;color:var(--text);font:inherit;resize:vertical}.brief{display:none}.brief.show{display:block}.brief h4{font-size:18px;margin:0 0 4px}.brief .one{color:#d6dce3;line-height:1.5}.brief-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.brief-card strong{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px}.brief-card p,.brief-card li{font-size:12px;line-height:1.5;color:#cfd5dc}.brief-card ul{padding-left:17px;margin:0}.brief-actions{display:flex;gap:7px;margin-top:10px}.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);border:1px solid #3b424d;background:#20252c;padding:9px 14px;border-radius:999px;display:none;z-index:50}.toast.show{display:block}.empty{padding:35px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px}
+@media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.toolbar{flex-direction:column}.metrics{grid-template-columns:repeat(3,1fr)}.factor-grid{grid-template-columns:repeat(3,1fr)}.ideas{grid-template-columns:1fr}}@media(max-width:580px){.shell{padding:18px 12px}.head{align-items:start;flex-direction:column}.kpis{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.stats{grid-template-columns:repeat(2,1fr)}.factor-grid{grid-template-columns:repeat(2,1fr)}.cols,.brief-grid{grid-template-columns:1fr}.drawer-in{padding:18px}}
+</style></head><body><main class="shell"><header class="head"><div><div class="eyebrow">PAIN INDEX</div><h1>Opportunity queue</h1><p>Repeated problems ranked by commercial signal.</p></div><div class="actions"><button id="focus" class="btn">Focus: off</button><button id="sort" class="btn">Score ↓</button></div></header>
+<section class="kpis"><div class="kpi"><label>New signals</label><strong>${newCount}</strong><small>awaiting review</small></div><div class="kpi"><label>Strong leads</label><strong>${strong}</strong><small>score ≥ 70</small></div><div class="kpi"><label>Pursuing</label><strong>${pursuing}</strong><small>active bets</small></div><div class="kpi"><label>Unpriced pain</label><strong>${unpriced}</strong><small>8+ posts · zero volume</small></div></section>
+<section class="toolbar"><input id="search" class="search" type="search" placeholder="Search pain, subreddit, market…"><div id="filters" class="filters"><button class="filter active" data-filter="all">All</button><button class="filter" data-filter="new">New</button><button class="filter" data-filter="watching">Watching</button><button class="filter" data-filter="pursue">Pursue</button><button class="filter" data-filter="unpriced">Unpriced pain</button></div></section><div class="queue-head"><strong>Ranked opportunities</strong><span id="shown" class="muted">${data.length} shown</span></div><section id="queue" class="queue">${data.map(rowHtml).join("\n")}</section><div id="empty" class="empty" style="display:none">No opportunities match this view.</div></main>
+<div id="backdrop" class="backdrop"></div><aside id="drawer" class="drawer" aria-label="Opportunity detail"><div class="drawer-in"><div class="drawer-head"><div><span id="detailScore" class="pill"></span> <span id="detailStatus" class="pill"></span></div><button id="close" class="btn">Close</button></div><h2 id="title"></h2><div id="meta" class="muted"></div>
+<div class="stats"><div class="stat"><label>Posts</label><strong id="sPosts"></strong></div><div class="stat"><label>Velocity</label><strong id="sVelocity"></strong></div><div class="stat"><label>Volume</label><strong id="sVolume"></strong></div><div class="stat"><label>KD</label><strong id="sKd"></strong></div><div class="stat"><label>Intent</label><strong id="sIntent"></strong></div></div>
+<section class="section"><div class="section-head"><h3>Signal trend · 8 weeks</h3><span id="trendTotal" class="muted"></span></div><div id="trend" class="chart"></div><div class="trend-label">Stored posts per week. The production velocity score compares the most recent 30 days with days 31–60.</div></section>
+<section class="section"><div class="section-head"><h3>Why this score</h3><span id="formula" class="muted"></span></div><div id="factors" class="factor-grid"></div></section>
+<section class="section"><div class="section-head"><h3>Evidence</h3><span id="postCount" class="muted"></span></div><div id="posts" class="evidence">Loading…</div></section>
+<section class="section"><div class="section-head"><h3>AI opportunity analysis</h3><button id="analyze" class="btn primary">Analyze opportunity</button></div><div id="analysisEmpty" class="muted">Grounded in current metrics and recent stored evidence.</div><div id="analysis" class="analysis"><div id="why" class="why"></div><div id="ideas" class="ideas"></div><div class="cols"><div><h4>Validation plan</h4><ol id="validation"></ol></div><div><h4>Risks</h4><ul id="risks"></ul></div></div><span id="verdict" class="verdict"></span></div></section>
+<section class="section"><div class="section-head"><h3>Build this</h3><button id="build" class="btn primary">Generate product brief</button></div><div class="muted">Turns the signal into a narrow product brief, validation plan, MVP, implementation phases, metrics, and kill criteria. A successful build marks the opportunity as pursue.</div><div id="brief" class="brief"><div class="brief-card"><h4 id="briefTitle"></h4><div id="briefOne" class="one"></div></div><div class="brief-grid"><div class="brief-card"><strong>Target user</strong><p id="briefUser"></p></div><div class="brief-card"><strong>Wedge</strong><p id="briefWedge"></p></div><div class="brief-card"><strong>MVP</strong><ul id="briefMvp"></ul></div><div class="brief-card"><strong>Validation</strong><ul id="briefValidation"></ul></div><div class="brief-card"><strong>Implementation</strong><ul id="briefImplementation"></ul></div><div class="brief-card"><strong>Kill criteria</strong><ul id="briefKill"></ul></div></div><div class="brief-actions"><button id="copyBrief" class="btn">Copy Markdown</button><button id="downloadBrief" class="btn">Download .md</button></div></div></section>
+<section class="section"><div class="section-head"><h3>Analyst notes</h3></div><textarea id="notes" class="notes" placeholder="Product angle, caveat, next experiment…"></textarea><div class="actions" style="justify-content:space-between;margin-top:8px"><button id="save" class="btn">Save notes</button><div class="actions"><button class="btn danger" data-status="killed">Kill</button><button class="btn" data-status="watching">Watch</button><button class="btn primary" data-status="pursue">Pursue</button></div></div></section></div></aside><div id="toast" class="toast"></div><script id="cluster-data" type="application/json">${serialized}</script>
 <script>
-(function () {
-  var TOKEN = ${JSON.stringify(token)};
-  function apiFetch(path, options) {
-    options = options || {};
-    options.headers = Object.assign({ "x-review-token": TOKEN, "content-type": "application/json" }, options.headers || {});
-    return fetch(path, options);
-  }
-
-  var tbody = document.querySelector("#clusters-table tbody");
-
-  // --- Filter tabs ---
-  document.getElementById("tabs").addEventListener("click", function (e) {
-    var btn = e.target.closest("button[data-filter]");
-    if (!btn) return;
-    document.querySelectorAll("#tabs button").forEach(function (b) { b.classList.remove("active"); });
-    btn.classList.add("active");
-    var filter = btn.getAttribute("data-filter");
-    document.querySelectorAll("tr.cluster-row").forEach(function (row) {
-      var show = true;
-      if (filter === "high-pain") show = row.getAttribute("data-high-pain") === "true";
-      else if (filter !== "all") show = row.getAttribute("data-status") === filter;
-      row.classList.toggle("hidden", !show);
-      var detail = row.nextElementSibling;
-      if (!show && detail) detail.classList.add("hidden");
-    });
-  });
-
-  // --- Sorting ---
-  var sortState = { key: null, dir: 1 };
-  document.querySelectorAll("th[data-key]").forEach(function (th) {
-    th.addEventListener("click", function () {
-      var key = th.getAttribute("data-key");
-      sortState.dir = sortState.key === key ? -sortState.dir : 1;
-      sortState.key = key;
-      document.querySelectorAll("th").forEach(function (h) { h.classList.remove("sorted"); h.removeAttribute("data-dir"); });
-      th.classList.add("sorted");
-      th.setAttribute("data-dir", sortState.dir === 1 ? "▲" : "▼");
-
-      var rows = Array.prototype.slice.call(document.querySelectorAll("tr.cluster-row"));
-      rows.sort(function (a, b) {
-        var av = a.getAttribute("data-" + key);
-        var bv = b.getAttribute("data-" + key);
-        var an = parseFloat(av), bn = parseFloat(bv);
-        var cmp;
-        if (!isNaN(an) && !isNaN(bn)) cmp = an - bn;
-        else cmp = av.localeCompare(bv);
-        return cmp * sortState.dir;
-      });
-      rows.forEach(function (row) {
-        var detail = row.nextElementSibling;
-        tbody.appendChild(row);
-        if (detail) tbody.appendChild(detail);
-      });
-    });
-  });
-
-  // --- Row expand / collapse, loads recent posts lazily ---
-  tbody.addEventListener("click", function (e) {
-    if (e.target.closest("select, input, textarea, button, a")) return;
-    var row = e.target.closest("tr.cluster-row");
-    if (!row) return;
-    var id = row.getAttribute("data-id");
-    var detail = row.nextElementSibling;
-    if (!detail) return;
-    var wasHidden = detail.classList.contains("hidden");
-    detail.classList.toggle("hidden");
-    if (wasHidden && !detail.getAttribute("data-loaded")) {
-      detail.setAttribute("data-loaded", "1");
-      var postsBlock = detail.querySelector(".posts-block");
-      apiFetch("/api/clusters/" + id + "/posts")
-        .then(function (r) { return r.json(); })
-        .then(function (posts) {
-          if (!posts.length) { postsBlock.textContent = "No posts on record."; return; }
-          postsBlock.innerHTML = "";
-          posts.forEach(function (p) {
-            var a = document.createElement("a");
-            a.href = p.permalink;
-            a.target = "_blank";
-            a.rel = "noopener noreferrer";
-            a.textContent = "r/" + p.subreddit + " — " + p.title;
-            postsBlock.appendChild(a);
-          });
-        })
-        .catch(function () { postsBlock.textContent = "Failed to load posts."; });
-    }
-  });
-
-  // --- Status mutation ---
-  tbody.addEventListener("change", function (e) {
-    if (!e.target.classList.contains("status-select")) return;
-    var row = e.target.closest("tr.cluster-row");
-    var id = row.getAttribute("data-id");
-    var status = e.target.value;
-    apiFetch("/api/clusters/" + id + "/status", { method: "POST", body: JSON.stringify({ status: status }) })
-      .then(function (r) { if (r.ok) row.setAttribute("data-status", status); });
-  });
-
-  // --- Inline label/notes edit ---
-  tbody.addEventListener("dblclick", function (e) {
-    var span = e.target.closest(".label-text");
-    if (!span) return;
-    span.classList.add("hidden");
-    span.nextElementSibling.classList.remove("hidden");
-    span.nextElementSibling.focus();
-  });
-
-  tbody.addEventListener("click", function (e) {
-    if (!e.target.classList.contains("save-notes")) return;
-    var detail = e.target.closest("tr.detail-row");
-    var id = detail.getAttribute("data-detail-for");
-    var row = detail.previousElementSibling;
-    var labelInput = row.querySelector(".label-input");
-    var notes = detail.querySelector(".notes-input").value;
-    var label = labelInput.value;
-    apiFetch("/api/clusters/" + id, { method: "POST", body: JSON.stringify({ label: label, notes: notes }) })
-      .then(function (r) {
-        if (r.ok) {
-          var span = row.querySelector(".label-text");
-          span.textContent = label;
-          span.classList.remove("hidden");
-          labelInput.classList.add("hidden");
-          row.setAttribute("data-label", label.toLowerCase());
-        }
-      });
-  });
-})();
-</script>
-</body>
-</html>`;
+(function(){var TOKEN=${JSON.stringify(token)},data=JSON.parse(document.getElementById('cluster-data').textContent),rows=Array.from(document.querySelectorAll('.opp')),filter='all',focus=false,descending=true,current=null,lastBrief=null,drawer=document.getElementById('drawer'),backdrop=document.getElementById('backdrop');
+function api(path,opts){opts=opts||{};opts.headers=Object.assign({'x-review-token':TOKEN,'content-type':'application/json'},opts.headers||{});return fetch(path,opts)}function toast(m){var t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},1800)}function fmt(v,d){return v===null||v===undefined?'—':Number(v).toFixed(d||0)}function item(id){return data.find(function(x){return x.id===Number(id)})}
+function apply(){var q=document.getElementById('search').value.trim().toLowerCase(),n=0;rows.forEach(function(r){var ok=(!q||r.dataset.search.includes(q))&&(filter==='all'||r.dataset.status===filter||(filter==='unpriced'&&r.dataset.unpriced==='true'))&&(!focus||Number(r.dataset.score)>=70);r.classList.toggle('hidden',!ok);if(ok)n++});document.getElementById('shown').textContent=n+' shown';document.getElementById('empty').style.display=n?'none':'block'}function sortRows(){rows.sort(function(a,b){return(Number(a.dataset.score)-Number(b.dataset.score))*(descending?-1:1)});rows.forEach(function(r){document.getElementById('queue').appendChild(r)})}
+function openDetail(id){current=item(id);lastBrief=null;if(!current)return;document.getElementById('detailScore').textContent='PAINDEX '+fmt(current.opportunityScore);document.getElementById('detailStatus').textContent=current.status.toUpperCase();document.getElementById('title').textContent=current.label;document.getElementById('meta').textContent=(current.subs?current.subs.split(',').map(function(s){return'r/'+s}).join(' · ')+' · ':'')+'first seen '+current.firstSeen.slice(0,10);document.getElementById('sPosts').textContent=current.postCount;document.getElementById('sVelocity').textContent=fmt(current.velocity30d,1)+'×';document.getElementById('sVolume').textContent=current.volume===null?'—':Number(current.volume).toLocaleString();document.getElementById('sKd').textContent=current.kd===null?'—':current.kd;document.getElementById('sIntent').textContent=fmt(current.avgIntent,1)+'/10';document.getElementById('notes').value=current.notes||'';document.getElementById('analysis').classList.remove('show');document.getElementById('analysisEmpty').style.display='block';document.getElementById('brief').classList.remove('show');drawer.classList.add('open');backdrop.classList.add('open');loadPosts();loadTrend()}
+function close(){drawer.classList.remove('open');backdrop.classList.remove('open');current=null}function loadPosts(){var box=document.getElementById('posts');box.textContent='Loading…';api('/api/clusters/'+current.id+'/posts').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(posts){document.getElementById('postCount').textContent=posts.length+' recent';box.innerHTML='';if(!posts.length){box.textContent='No supporting posts stored.';return}posts.forEach(function(p){var a=document.createElement('article');a.className='post';var m=document.createElement('div');m.className='post-meta';m.textContent='r/'+p.subreddit+(p.painCategory?' · '+p.painCategory:'')+(p.commercialIntent!==null?' · intent '+p.commercialIntent+'/10':'');var link=document.createElement('a');link.href=p.permalink;link.target='_blank';link.rel='noopener noreferrer';link.textContent=p.title;a.append(m,link);if(p.excerpt){var x=document.createElement('p');x.textContent=p.excerpt;a.appendChild(x)}box.appendChild(a)})}).catch(function(){box.textContent='Could not load evidence.'})}
+function loadTrend(){api('/api/clusters/'+current.id+'/trend').then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(t){var chart=document.getElementById('trend'),max=Math.max.apply(null,t.weeks.map(function(w){return w.count}).concat([1])),total=0;chart.innerHTML='';t.weeks.forEach(function(w){total+=w.count;var wrap=document.createElement('div');wrap.className='bar-wrap';var bar=document.createElement('i');bar.className='bar';bar.style.height=Math.max(2,(w.count/max)*100)+'%';bar.title=w.count+' posts';var label=document.createElement('span');label.textContent=new Date(w.start).toLocaleDateString(undefined,{month:'short',day:'numeric'});wrap.append(bar,label);chart.appendChild(wrap)});document.getElementById('trendTotal').textContent=total+' posts';document.getElementById('formula').textContent=t.formula;var factors=document.getElementById('factors'),factorMax=Math.max.apply(null,t.factors.map(function(f){return Math.abs(f.value)}).concat([1]));factors.innerHTML='';t.factors.forEach(function(f){var d=document.createElement('div');d.className='factor';var l=document.createElement('label');l.textContent=f.label;var s=document.createElement('strong');s.textContent=(f.value>=0?'+':'')+Number(f.value).toFixed(1);var track=document.createElement('div');track.className='factor-track';var i=document.createElement('i');i.style.width=Math.min(100,Math.abs(f.value)/factorMax*100)+'%';track.appendChild(i);d.append(l,s,track);factors.appendChild(d)})}).catch(function(){document.getElementById('trend').textContent='Trend unavailable';document.getElementById('factors').textContent='Score breakdown unavailable'})}
+function setStatus(status){if(!current)return;api('/api/clusters/'+current.id+'/status',{method:'POST',body:JSON.stringify({status:status})}).then(function(r){if(!r.ok)throw 0;current.status=status;var row=rows.find(function(x){return Number(x.dataset.id)===current.id});row.dataset.status=status;var pill=row.querySelector('.pill');pill.textContent=status;pill.className='pill '+status;document.getElementById('detailStatus').textContent=status.toUpperCase();apply();toast('Status updated')}).catch(function(){toast('Status update failed')})}
+function save(){var notes=document.getElementById('notes').value;api('/api/clusters/'+current.id,{method:'POST',body:JSON.stringify({notes:notes})}).then(function(r){if(!r.ok)throw 0;current.notes=notes;toast('Notes saved')}).catch(function(){toast('Save failed')})}
+function analyze(){var b=document.getElementById('analyze');b.disabled=true;b.textContent='Analyzing…';api('/api/clusters/'+current.id+'/analyze',{method:'POST',body:'{}'}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(a){document.getElementById('analysisEmpty').style.display='none';document.getElementById('analysis').classList.add('show');document.getElementById('why').textContent=a.whyItMatters;var ideas=document.getElementById('ideas');ideas.innerHTML='';a.productIdeas.forEach(function(x){var d=document.createElement('div');d.className='idea';var s=document.createElement('strong');s.textContent=x.name;var p=document.createElement('span');p.textContent=x.angle;d.append(s,p);ideas.appendChild(d)});fillList('validation',a.validationPlan);fillList('risks',a.risks);document.getElementById('verdict').textContent='Model verdict · '+a.verdict;b.textContent='Re-analyze'}).catch(function(){toast('Analysis failed');b.textContent='Analyze opportunity'}).finally(function(){b.disabled=false})}
+function fillList(id,items){var el=document.getElementById(id);el.innerHTML='';items.forEach(function(x){var li=document.createElement('li');li.textContent=x;el.appendChild(li)})}function build(){var b=document.getElementById('build');b.disabled=true;b.textContent='Building…';api('/api/clusters/'+current.id+'/build',{method:'POST',body:'{}'}).then(function(r){if(!r.ok)throw 0;return r.json()}).then(function(x){lastBrief=x;document.getElementById('brief').classList.add('show');document.getElementById('briefTitle').textContent=x.workingTitle;document.getElementById('briefOne').textContent=x.oneLiner;document.getElementById('briefUser').textContent=x.targetUser;document.getElementById('briefWedge').textContent=x.wedge;fillList('briefMvp',x.mvp);fillList('briefValidation',x.validation);fillList('briefKill',x.killCriteria);fillList('briefImplementation',x.implementation.map(function(p){return p.phase+': '+p.objective+' — '+p.tasks.join('; ')}));setStatus('pursue');b.textContent='Rebuild brief'}).catch(function(){toast('Build failed');b.textContent='Generate product brief'}).finally(function(){b.disabled=false})}
+function copyBrief(){if(!lastBrief)return;navigator.clipboard.writeText(lastBrief.markdown).then(function(){toast('Markdown copied')})}function downloadBrief(){if(!lastBrief)return;var blob=new Blob([lastBrief.markdown],{type:'text/markdown'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=(lastBrief.workingTitle||'paindex-brief').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')+'.md';a.click();setTimeout(function(){URL.revokeObjectURL(a.href)},1000)}
+document.getElementById('filters').addEventListener('click',function(e){var b=e.target.closest('[data-filter]');if(!b)return;document.querySelectorAll('[data-filter]').forEach(function(x){x.classList.remove('active')});b.classList.add('active');filter=b.dataset.filter;apply()});document.getElementById('search').addEventListener('input',apply);document.getElementById('focus').addEventListener('click',function(e){focus=!focus;e.currentTarget.textContent=focus?'Focus: 70+':'Focus: off';apply()});document.getElementById('sort').addEventListener('click',function(e){descending=!descending;e.currentTarget.textContent=descending?'Score ↓':'Score ↑';sortRows();apply()});rows.forEach(function(r){r.addEventListener('click',function(){openDetail(r.dataset.id)})});document.getElementById('close').addEventListener('click',close);backdrop.addEventListener('click',close);document.addEventListener('keydown',function(e){if(e.key==='Escape')close()});document.getElementById('save').addEventListener('click',save);document.querySelectorAll('[data-status]').forEach(function(b){b.addEventListener('click',function(){setStatus(b.dataset.status)})});document.getElementById('analyze').addEventListener('click',analyze);document.getElementById('build').addEventListener('click',build);document.getElementById('copyBrief').addEventListener('click',copyBrief);document.getElementById('downloadBrief').addEventListener('click',downloadBrief);
+})();</script></body></html>`;
 }
