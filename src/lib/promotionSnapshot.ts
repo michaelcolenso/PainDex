@@ -63,6 +63,30 @@ export async function seedPromotionScoreSnapshot(env: Env, clusterId: number): P
   return true;
 }
 
+export async function promoteActionableStatus(env: Env, clusterId: number): Promise<boolean> {
+  const cluster = await env.DB.prepare(
+    "SELECT status FROM clusters WHERE id = ?1",
+  ).bind(clusterId).first<{ status: string }>();
+  if (!cluster || (cluster.status !== "watching" && cluster.status !== "pursue")) return false;
+
+  const created = await env.DB.prepare(
+    `INSERT INTO opportunities (cluster_id, stage)
+     VALUES (?1, ?2)
+     ON CONFLICT(cluster_id) DO NOTHING
+     RETURNING id`,
+  ).bind(clusterId, cluster.status).first<{ id: number }>();
+
+  if (created) {
+    await env.DB.prepare(
+      `INSERT INTO opportunity_events (opportunity_id, event_type, to_stage, payload_json)
+       VALUES (?1, 'promoted', ?2, ?3)`,
+    ).bind(created.id, cluster.status, JSON.stringify({ legacyStatus: cluster.status, source: "review_status" })).run();
+  }
+
+  await seedPromotionScoreSnapshot(env, clusterId);
+  return Boolean(created);
+}
+
 export const seedPromotionSnapshot: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
   await next();
   if (c.res.status >= 400) return;
@@ -75,5 +99,20 @@ export const seedPromotionSnapshot: MiddlewareHandler<{ Bindings: Env }> = async
   } catch (error) {
     // Promotion/build should not fail solely because historical telemetry could not be written.
     console.error("promotion score snapshot failed", { clusterId, error });
+  }
+};
+
+export const promoteStatusDecision: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
+  await next();
+  if (c.res.status >= 400) return;
+
+  const clusterId = Number(c.req.param("id"));
+  if (!Number.isInteger(clusterId) || clusterId <= 0) return;
+
+  try {
+    await promoteActionableStatus(c.env, clusterId);
+  } catch (error) {
+    // The legacy status mutation already succeeded; log reconciliation failure for observability.
+    console.error("status-to-pipeline promotion failed", { clusterId, error });
   }
 };
